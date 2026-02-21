@@ -176,6 +176,34 @@ function App() {
     return () => cancelAnimationFrame(animationId);
   }, [isReady, detector, trackedBox, blurIntensity, isColorPop, isAutoTrack]);
 
+  const takeSnapshot = () => {
+    if (!canvasRef.current || !isReady) return;
+    try {
+      // Get image data
+      const dataUrl = canvasRef.current.toDataURL('image/png', 1.0);
+
+      // Create a unique filename
+      const date = new Date();
+      const filename = `AI_Focus_${date.getTime()}.png`;
+
+      // Force download via temporary link
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Status feedback
+      const prevMsg = statusMessage;
+      setStatusMessage("📸 PHOTO SAVED TO GALLERY");
+      setTimeout(() => setStatusMessage(prevMsg), 3000);
+    } catch (err) {
+      console.error(err);
+      setStatusMessage("Snapshot failed. Try again.");
+    }
+  };
+
   return (
     <div className="app-container">
       <div className="video-wrapper" onClick={(e) => {
@@ -196,6 +224,12 @@ function App() {
           <div className="loader"></div>
           <p className="status-msg">{statusMessage}</p>
           {!detector && <p className="sub-msg">Syncing AI Core...</p>}
+        </div>
+      )}
+
+      {isReady && statusMessage && (
+        <div className="status-banner">
+          {statusMessage}
         </div>
       )}
 
@@ -223,7 +257,7 @@ function App() {
           >
             🔄 Switch to {facingMode === "user" ? "Back" : "Front"} Camera
           </button>
-          <button className="snapshot-btn" onClick={() => window.open(canvasRef.current.toDataURL(), '_blank')}>CAPTURE SNAPSHOT</button>
+          <button className="snapshot-btn" onClick={takeSnapshot}>CAPTURE SNAPSHOT</button>
         </div>
       </div>
     </div>
