@@ -16,6 +16,7 @@ function App() {
   const [isColorPop, setIsColorPop] = useState(false);
   const [isAutoTrack, setIsAutoTrack] = useState(false);
   const [facingMode, setFacingMode] = useState("user");
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Initializing AI...");
 
   // 1. Initialize AI Engine with Latest CDN
@@ -239,30 +240,41 @@ function App() {
         </button>
       </div>
 
-      <div className="ui-panel">
-        <div className="panel-header">
-          <h3>AI Focus Pro</h3>
-          <span className="fps-badge">{fps} FPS</span>
-        </div>
-        <div className="panel-body">
-          <div className="control-group">
-            <label>Depth of Field</label>
-            <input type="range" min="0" max="40" value={blurIntensity} onChange={e => setBlurIntensity(Number(e.target.value))} />
+      <button
+        className="settings-toggle"
+        onClick={() => setIsPanelOpen(true)}
+        aria-label="Open Settings"
+      >
+        ⚙️
+      </button>
+
+      <div className={`ui-panel-overlay ${isPanelOpen ? 'open' : ''}`} onClick={() => setIsPanelOpen(false)}>
+        <div className={`ui-panel ${isPanelOpen ? 'open' : ''}`} onClick={(e) => e.stopPropagation()}>
+          <div className="panel-handle"></div>
+          <div className="panel-header">
+            <h3>Camera Settings</h3>
+            <button className="close-panel" onClick={() => setIsPanelOpen(false)}>✕</button>
           </div>
-          <div className="toggle-group">
-            <input type="checkbox" checked={isColorPop} onChange={e => setIsColorPop(e.target.checked)} id="cp" />
-            <label htmlFor="cp">Color Pop (B&W)</label>
+          <div className="panel-body">
+            <div className="control-group">
+              <label>Focus Depth (Blur)</label>
+              <input type="range" min="0" max="40" value={blurIntensity} onChange={e => setBlurIntensity(Number(e.target.value))} />
+            </div>
+            <div className="toggle-group">
+              <input type="checkbox" checked={isColorPop} onChange={e => setIsColorPop(e.target.checked)} id="cp" />
+              <label htmlFor="cp">Color Pop (B&W)</label>
+            </div>
+            <div className="toggle-group">
+              <input type="checkbox" checked={isAutoTrack} onChange={e => setIsAutoTrack(e.target.checked)} id="at" />
+              <label htmlFor="at">Auto Subject Search</label>
+            </div>
+            <button
+              className="switch-camera-btn"
+              onClick={() => setFacingMode(prev => prev === "user" ? "environment" : "user")}
+            >
+              🔄 Switch to {facingMode === "user" ? "Back" : "Front"} Camera
+            </button>
           </div>
-          <div className="toggle-group">
-            <input type="checkbox" checked={isAutoTrack} onChange={e => setIsAutoTrack(e.target.checked)} id="at" />
-            <label htmlFor="at">Auto Subject Search</label>
-          </div>
-          <button
-            className="switch-camera-btn"
-            onClick={() => setFacingMode(prev => prev === "user" ? "environment" : "user")}
-          >
-            🔄 Switch to {facingMode === "user" ? "Back" : "Front"} Camera
-          </button>
         </div>
       </div>
     </div>
