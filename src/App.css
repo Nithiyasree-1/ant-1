@@ -163,6 +163,29 @@ h1 {
   color: #e2e8f0;
 }
 
+.switch-camera-btn {
+  margin-top: 1rem;
+  padding: 0.8rem;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.05);
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(10px);
+}
+
+.switch-camera-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.switch-camera-btn:active {
+  transform: translateY(0);
+}
+
 .snapshot-btn {
   margin-top: 0.5rem;
   padding: 0.8rem;

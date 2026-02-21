@@ -15,12 +15,13 @@ function App() {
   const [fps, setFps] = useState(0);
   const [isColorPop, setIsColorPop] = useState(false);
   const [isAutoTrack, setIsAutoTrack] = useState(false);
-  const [error, setError] = useState(null);
+  const [facingMode, setFacingMode] = useState("user");
+  const [statusMessage, setStatusMessage] = useState("Initializing AI...");
 
-  // 1. Initialize AI Engine (Runs instantly)
+  // 1. Initialize AI Engine with Latest CDN
   useEffect(() => {
     let active = true;
-    async function init() {
+    async function initAI() {
       try {
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
@@ -33,48 +34,71 @@ function App() {
           runningMode: "VIDEO",
           scoreThreshold: 0.35,
         });
-        if (active) setDetector(objDetector);
+        if (active) {
+          setDetector(objDetector);
+          setStatusMessage("AI Ready. Click anywhere to start camera.");
+        }
       } catch (err) {
-        console.error("AI Error:", err);
-        setError("AI Engine Syncing...");
+        console.error("AI Init Error:", err);
+        setStatusMessage("AI Sync Error. Please Refresh.");
       }
     }
-    init();
+    initAI();
     return () => { active = false; };
   }, []);
 
-  // 2. Optimized Camera Startup
+  // 2. Adaptive Camera Logic (The main fix)
   const startCamera = useCallback(async () => {
-    if (streamRef.current) return;
+    setStatusMessage("Connecting to Camera...");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-        audio: false,
-      });
+      // Stop any existing stream tracks
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+        setIsReady(false); // Set ready to false while camera is restarting
+      }
+
+      // Use flexible constraints to avoid hardware rejection
+      const constraints = {
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: facingMode
+        },
+        audio: false
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => setIsReady(true);
+        // Forced playback to overcome browser "Auto-pause"
+        await videoRef.current.play();
+        setIsReady(true);
+        setStatusMessage("");
       }
-      setError(null);
     } catch (err) {
-      setError("Please Refresh or Allow Camera Access");
-      console.error(err);
+      console.error("Camera Error:", err);
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        setStatusMessage("Camera Blocked. Please click the 'Lock' icon in your URL bar and allow access.");
+      } else {
+        setStatusMessage("Hardware Error: Please try another browser (Chrome/Edge recommended).");
+      }
     }
-  }, []);
+  }, [facingMode]); // Add facingMode to dependencies
 
-  // Auto-trigger camera on first interaction or mount
+  // Trigger camera on mount AND on click (to beat browser security)
   useEffect(() => {
     startCamera();
     window.addEventListener('click', startCamera);
-    window.addEventListener('touchstart', startCamera);
-    return () => {
-      window.removeEventListener('click', startCamera);
-      window.removeEventListener('touchstart', startCamera);
-    };
-  }, [startCamera]);
+    return () => window.removeEventListener('click', startCamera);
+  }, [startCamera, facingMode]);
 
-  // 3. Render Loop (Canvas Engine)
+  // 3. Rendering Engine
   useEffect(() => {
     if (!isReady || !detector) return;
     let animationId;
@@ -91,7 +115,7 @@ function App() {
 
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      if (!video || !canvas) return;
+      if (!video || video.paused || video.ended) return;
 
       const ctx = canvas.getContext('2d', { alpha: false });
       canvas.width = video.videoWidth;
@@ -111,7 +135,7 @@ function App() {
           const iD = Math.min(trackedBox.originY + trackedBox.height, d.boundingBox.originY + d.boundingBox.height);
           const inter = Math.max(0, iC - iA) * Math.max(0, iD - iB);
           const iou = inter / ((trackedBox.width * trackedBox.height) + (d.boundingBox.width * d.boundingBox.height) - inter);
-          if (iou > maxIoU && iou > 0.2) { maxIoU = iou; focus = d.boundingBox; }
+          if (iou > maxIoU && iou > 0.15) { maxIoU = iou; focus = d.boundingBox; }
         });
         if (focus) setTrackedBox(focus);
       }
@@ -123,12 +147,12 @@ function App() {
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (focus && blurIntensity > 0) {
-        ctx.filter = `blur(${blurIntensity}px) brightness(0.6) ${isColorPop ? 'grayscale(100%)' : ''}`;
+        ctx.filter = `blur(${blurIntensity}px) brightness(0.7) ${isColorPop ? 'grayscale(100%)' : ''}`;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         ctx.filter = 'none';
         ctx.save();
         ctx.beginPath();
-        ctx.rect(focus.originX - 5, focus.originY - 5, focus.width + 10, focus.height + 10);
+        ctx.rect(focus.originX - 10, focus.originY - 10, focus.width + 20, focus.height + 20);
         ctx.clip();
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         ctx.restore();
@@ -140,7 +164,7 @@ function App() {
 
       currentDets.forEach(d => {
         const isFocus = focus && (d.boundingBox.originX === focus.originX);
-        ctx.strokeStyle = isFocus ? '#facc15' : 'rgba(56, 189, 248, 0.4)';
+        ctx.strokeStyle = isFocus ? '#facc15' : 'rgba(56, 189, 248, 0.5)';
         ctx.lineWidth = isFocus ? 4 : 2;
         ctx.strokeRect(d.boundingBox.originX, d.boundingBox.originY, d.boundingBox.width, d.boundingBox.height);
       });
@@ -152,38 +176,37 @@ function App() {
     return () => cancelAnimationFrame(animationId);
   }, [isReady, detector, trackedBox, blurIntensity, isColorPop, isAutoTrack]);
 
-  const clickSelect = (e) => {
-    const rect = canvasRef.current.getBoundingClientRect();
-    const x = videoRef.current.videoWidth - ((e.clientX - rect.left) * (videoRef.current.videoWidth / rect.width));
-    const y = (e.clientY - rect.top) * (videoRef.current.videoHeight / rect.height);
-    detections.forEach(d => {
-      const b = d.boundingBox;
-      if (x >= b.originX && x <= b.originX + b.width && y >= b.originY && y <= b.originY + b.height) setTrackedBox(b);
-    });
-  };
-
   return (
     <div className="app-container">
-      <div className="video-wrapper" onClick={clickSelect}>
+      <div className="video-wrapper" onClick={(e) => {
+        const rect = canvasRef.current.getBoundingClientRect();
+        const x = videoRef.current.videoWidth - ((e.clientX - rect.left) * (videoRef.current.videoWidth / rect.width));
+        const y = (e.clientY - rect.top) * (videoRef.current.videoHeight / rect.height);
+        detections.forEach(d => {
+          if (x >= d.boundingBox.originX && x <= d.boundingBox.originX + d.boundingBox.width &&
+            y >= d.boundingBox.originY && y <= d.boundingBox.originY + d.boundingBox.height) setTrackedBox(d.boundingBox);
+        });
+      }}>
         <video ref={videoRef} autoPlay playsInline muted hidden />
         <canvas ref={canvasRef} className="overlay-canvas" />
       </div>
 
-      {(!isReady || !detector) && (
+      {!isReady && (
         <div className="loading-overlay">
           <div className="loader"></div>
-          <p>{error || "Booting Smart Vision Engine..."}</p>
+          <p className="status-msg">{statusMessage}</p>
+          {!detector && <p className="sub-msg">Syncing AI Core...</p>}
         </div>
       )}
 
       <div className="ui-panel">
         <div className="panel-header">
-          <h3>Smart Focus AI</h3>
+          <h3>AI Focus Pro</h3>
           <span className="fps-badge">{fps} FPS</span>
         </div>
         <div className="panel-body">
           <div className="control-group">
-            <label>Focus Depth</label>
+            <label>Depth of Field</label>
             <input type="range" min="0" max="40" value={blurIntensity} onChange={e => setBlurIntensity(Number(e.target.value))} />
           </div>
           <div className="toggle-group">
@@ -192,9 +215,15 @@ function App() {
           </div>
           <div className="toggle-group">
             <input type="checkbox" checked={isAutoTrack} onChange={e => setIsAutoTrack(e.target.checked)} id="at" />
-            <label htmlFor="at">Auto-Focus</label>
+            <label htmlFor="at">Auto Subject Search</label>
           </div>
-          <button className="snapshot-btn" onClick={() => window.open(canvasRef.current.toDataURL(), '_blank')}>CAPTURE</button>
+          <button
+            className="switch-camera-btn"
+            onClick={() => setFacingMode(prev => prev === "user" ? "environment" : "user")}
+          >
+            🔄 Switch to {facingMode === "user" ? "Back" : "Front"} Camera
+          </button>
+          <button className="snapshot-btn" onClick={() => window.open(canvasRef.current.toDataURL(), '_blank')}>CAPTURE SNAPSHOT</button>
         </div>
       </div>
     </div>
