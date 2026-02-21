@@ -12,6 +12,9 @@ function App() {
   const [blurIntensity, setBlurIntensity] = useState(12);
   const [fps, setFps] = useState(0);
   const [isCameraActive, setIsCameraActive] = useState(true);
+  const [isColorPop, setIsColorPop] = useState(false);
+  const [isAutoTrack, setIsAutoTrack] = useState(false);
+  const [hasStarted, setHasStarted] = useState(false);
   const streamRef = useRef(null);
 
   // Helper: Calculate IoU (Intersection over Union)
@@ -29,8 +32,8 @@ function App() {
     return interArea / (boxAArea + boxBArea - interArea);
   };
 
-  // Step 3: Initialize Object Detector
   useEffect(() => {
+    if (!hasStarted) return;
     async function initDetector() {
       const vision = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
@@ -49,6 +52,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!hasStarted) return;
     async function setupCamera() {
       if (!isCameraActive) {
         if (streamRef.current) {
@@ -135,29 +139,48 @@ function App() {
             }
           }
 
-          // Step 6: Background Blur & Rendering
+          // Auto-Focus Intelligence: Pick largest object if none tracked
+          if (isAutoTrack && !updatedTrackedBox && currentDetections.length > 0) {
+            let largestBox = currentDetections[0].boundingBox;
+            let maxArea = largestBox.width * largestBox.height;
+
+            currentDetections.forEach(det => {
+              const area = det.boundingBox.width * det.boundingBox.height;
+              if (area > maxArea) {
+                maxArea = area;
+                largestBox = det.boundingBox;
+              }
+            });
+            updatedTrackedBox = largestBox;
+            setTrackedBox(largestBox);
+          }
+
+          // Step 6: Background Rendering & Visual Effects
           ctx.clearRect(0, 0, canvas.width, canvas.height);
 
           if (updatedTrackedBox && blurIntensity > 0) {
-            // 1. Draw blurred version
-            ctx.filter = `blur(${blurIntensity}px) brightness(0.7)`;
+            // 1. Draw background with Filters (Blur + optional Grayscale)
+            const bgFilter = `blur(${blurIntensity}px) brightness(0.7) ${isColorPop ? 'grayscale(100%)' : ''}`;
+            ctx.filter = bgFilter;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             ctx.filter = 'none';
 
             // 2. Clear then Draw sharp version inside the tracked box
             const { originX, originY, width, height } = updatedTrackedBox;
 
-            // Add a padding to the sharp area for smoother edges
-            const pad = 10;
+            // Cinematic Zoom logic (optional preview effect)
             ctx.save();
             ctx.beginPath();
-            ctx.rect(originX - pad, originY - pad, width + pad * 2, height + pad * 2);
+            ctx.rect(originX - 10, originY - 10, width + 20, height + 20);
             ctx.clip();
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             ctx.restore();
           } else {
-            // No tracking or blur off: direct draw
+            // Standard feed without tracking
+            const standardFilter = isColorPop ? 'grayscale(100%)' : 'none';
+            ctx.filter = standardFilter;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.filter = 'none';
           }
 
           // Step 3 & 4: Draw UI Overlays
@@ -177,6 +200,14 @@ function App() {
       setTrackedBox(null);
       setDetections([]);
     }
+  };
+
+  const takeSnapshot = () => {
+    if (!canvasRef.current) return;
+    const link = document.createElement('a');
+    link.download = `SmartFocus_${new Date().getTime()}.png`;
+    link.href = canvasRef.current.toDataURL('image/png');
+    link.click();
   };
 
   const handleCanvasClick = (e) => {
@@ -248,6 +279,25 @@ function App() {
     });
   };
 
+  if (!hasStarted) {
+    return (
+      <div className="landing-page">
+        <div className="hero-content">
+          <h1>Smart Focus <span className="ai-badge">AI</span></h1>
+          <p>Professional Object Tracking & Cinematic Background Blur</p>
+          <div className="feature-dots">
+            <span>• Real-time Detection</span>
+            <span>• IoU Tracking</span>
+            <span>• Visual FX</span>
+          </div>
+          <button className="start-btn" onClick={() => setHasStarted(true)}>
+            LAUNCH SYSTEM
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-container">
       <div className="video-wrapper" onClick={handleCanvasClick}>
@@ -300,6 +350,28 @@ function App() {
           >
             {isCameraActive ? '📷 Turn Camera OFF' : '📹 Turn Camera ON'}
           </button>
+
+          <div className="extra-actions">
+            <div className="toggle-group">
+              <label className="switch">
+                <input type="checkbox" checked={isColorPop} onChange={e => setIsColorPop(e.target.checked)} />
+                <span className="slider round"></span>
+              </label>
+              <span>Color Pop (B&W)</span>
+            </div>
+
+            <div className="toggle-group">
+              <label className="switch">
+                <input type="checkbox" checked={isAutoTrack} onChange={e => setIsAutoTrack(e.target.checked)} />
+                <span className="slider round"></span>
+              </label>
+              <span>AI Auto-Focus</span>
+            </div>
+
+            <button className="snapshot-btn" onClick={takeSnapshot} disabled={!isCameraActive}>
+              📸 Capture Masterpiece
+            </button>
+          </div>
         </div>
 
         <div className="panel-footer">
