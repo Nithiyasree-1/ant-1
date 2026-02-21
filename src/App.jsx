@@ -233,6 +233,12 @@ function App() {
         </div>
       )}
 
+      <div className="shutter-container">
+        <button className="shutter-button" onClick={takeSnapshot} aria-label="Take Snapshot">
+          <div className="shutter-inner"></div>
+        </button>
+      </div>
+
       <div className="ui-panel">
         <div className="panel-header">
           <h3>AI Focus Pro</h3>
@@ -257,7 +263,6 @@ function App() {
           >
             🔄 Switch to {facingMode === "user" ? "Back" : "Front"} Camera
           </button>
-          <button className="snapshot-btn" onClick={takeSnapshot}>CAPTURE SNAPSHOT</button>
         </div>
       </div>
     </div>
