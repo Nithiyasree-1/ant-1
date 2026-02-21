@@ -5,6 +5,8 @@ import './App.css';
 function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [detector, setDetector] = useState(null);
   const [detections, setDetections] = useState([]);
@@ -15,54 +17,50 @@ function App() {
   const [isColorPop, setIsColorPop] = useState(false);
   const [isAutoTrack, setIsAutoTrack] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
-  const streamRef = useRef(null);
 
-  // Helper: Calculate IoU (Intersection over Union)
+  // Helper: Calculate IoU
   const calculateIoU = (boxA, boxB) => {
     if (!boxA || !boxB) return 0;
     const xA = Math.max(boxA.originX, boxB.originX);
     const yA = Math.max(boxA.originY, boxB.originY);
     const xB = Math.min(boxA.originX + boxA.width, boxB.originX + boxB.width);
     const yB = Math.min(boxA.originY + boxA.height, boxB.originY + boxB.height);
-
     const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
     const boxAArea = boxA.width * boxA.height;
     const boxBArea = boxB.width * boxB.height;
-
     return interArea / (boxAArea + boxBArea - interArea);
   };
 
+  // 1. Initialize AI Detector immediately on page load
   useEffect(() => {
-    if (!hasStarted) return;
-    async function initDetector() {
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-      );
-      const objectDetector = await ObjectDetector.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: `https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite`,
-          delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        scoreThreshold: 0.4,
-      });
-      setDetector(objectDetector);
+    async function initAI() {
+      try {
+        console.log("Loading AI Vision engine...");
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm"
+        );
+        const objectDetector = await ObjectDetector.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite`,
+            delegate: "GPU"
+          },
+          runningMode: "VIDEO",
+          scoreThreshold: 0.35,
+        });
+        setDetector(objectDetector);
+        console.log("AI engine ready.");
+      } catch (err) {
+        console.error("AI Init Error:", err);
+      }
     }
-    initDetector();
+    initAI();
   }, []);
 
+  // 2. Initialize Camera when user clicks "Launch"
   useEffect(() => {
-    if (!hasStarted) return;
-    async function setupCamera() {
-      if (!isCameraActive) {
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach(track => track.stop());
-          streamRef.current = null;
-        }
-        setIsCameraReady(false);
-        return;
-      }
+    if (!hasStarted || !isCameraActive) return;
 
+    async function startCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -71,210 +69,129 @@ function App() {
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          videoRef.current.onloadedmetadata = () => {
-            setIsCameraReady(true);
-          };
+          videoRef.current.onloadedmetadata = () => setIsCameraReady(true);
         }
       } catch (err) {
-        console.error("Error accessing webcam: ", err);
+        alert("Please allow camera access to use this app.");
+        console.error(err);
       }
     }
-    setupCamera();
+    startCamera();
 
     return () => {
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current.getTracks().forEach(t => t.stop());
       }
     };
-  }, [isCameraActive]);
+  }, [hasStarted, isCameraActive]);
 
-  // Detection and Drawing loop
+  // 3. High-Performance Rendering Loop
   useEffect(() => {
     let animationId;
-    let lastTime = 0;
     let frameCount = 0;
-    let fpsInterval = 0;
+    let fpsInterval = performance.now();
 
-    if (isCameraReady && detector && videoRef.current && canvasRef.current) {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d', { alpha: false }); // Optimization
+    const runLoop = async (time) => {
+      // FPS Stats
+      frameCount++;
+      if (time - fpsInterval > 1000) {
+        setFps(Math.round((frameCount * 1000) / (time - fpsInterval)));
+        fpsInterval = time;
+        frameCount = 0;
+      }
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      if (isCameraReady && detector && videoRef.current && canvasRef.current) {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d', { alpha: false });
 
-      const runDetection = async (time) => {
-        // Calculate FPS
-        frameCount++;
-        if (time - fpsInterval > 1000) {
-          setFps(Math.round((frameCount * 1000) / (time - fpsInterval)));
-          fpsInterval = time;
-          frameCount = 0;
-        }
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
 
-        if (video.readyState >= 2) {
-          const startTimeMs = performance.now();
-          const result = await detector.detectForVideo(video, startTimeMs);
-          const currentDetections = result.detections;
-          setDetections(currentDetections);
+        const results = await detector.detectForVideo(video, performance.now());
+        const currentDetections = results.detections;
+        setDetections(currentDetections);
 
-          let updatedTrackedBox = null;
-
-          // Step 5: Tracking Logic
-          if (trackedBox) {
-            let maxIoU = 0;
-            let bestMatch = null;
-
-            currentDetections.forEach((det) => {
-              const iou = calculateIoU(trackedBox, det.boundingBox);
-              if (iou > maxIoU && iou > 0.25) {
-                maxIoU = iou;
-                bestMatch = det.boundingBox;
-              }
-            });
-
-            if (bestMatch) {
-              updatedTrackedBox = bestMatch;
-              setTrackedBox(bestMatch);
+        let activeBox = null;
+        if (trackedBox) {
+          let maxIoU = 0;
+          currentDetections.forEach(det => {
+            const iou = calculateIoU(trackedBox, det.boundingBox);
+            if (iou > maxIoU && iou > 0.25) {
+              maxIoU = iou;
+              activeBox = det.boundingBox;
             }
-          }
-
-          // Auto-Focus Intelligence: Pick largest object if none tracked
-          if (isAutoTrack && !updatedTrackedBox && currentDetections.length > 0) {
-            let largestBox = currentDetections[0].boundingBox;
-            let maxArea = largestBox.width * largestBox.height;
-
-            currentDetections.forEach(det => {
-              const area = det.boundingBox.width * det.boundingBox.height;
-              if (area > maxArea) {
-                maxArea = area;
-                largestBox = det.boundingBox;
-              }
-            });
-            updatedTrackedBox = largestBox;
-            setTrackedBox(largestBox);
-          }
-
-          // Step 6: Background Rendering & Visual Effects
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-          if (updatedTrackedBox && blurIntensity > 0) {
-            // 1. Draw background with Filters (Blur + optional Grayscale)
-            const bgFilter = `blur(${blurIntensity}px) brightness(0.7) ${isColorPop ? 'grayscale(100%)' : ''}`;
-            ctx.filter = bgFilter;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            ctx.filter = 'none';
-
-            // 2. Clear then Draw sharp version inside the tracked box
-            const { originX, originY, width, height } = updatedTrackedBox;
-
-            // Cinematic Zoom logic (optional preview effect)
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(originX - 10, originY - 10, width + 20, height + 20);
-            ctx.clip();
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            ctx.restore();
-          } else {
-            // Standard feed without tracking
-            const standardFilter = isColorPop ? 'grayscale(100%)' : 'none';
-            ctx.filter = standardFilter;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            ctx.filter = 'none';
-          }
-
-          // Step 3 & 4: Draw UI Overlays
-          drawDetections(ctx, currentDetections, updatedTrackedBox);
+          });
+          if (activeBox) setTrackedBox(activeBox);
         }
-        animationId = requestAnimationFrame(runDetection);
-      };
 
-      animationId = requestAnimationFrame(runDetection);
-    }
+        // Auto selection fallback
+        if (!activeBox && isAutoTrack && currentDetections.length > 0) {
+          activeBox = currentDetections.reduce((prev, current) =>
+            (prev.boundingBox.width * prev.boundingBox.height > current.boundingBox.width * current.boundingBox.height) ? prev : current
+          ).boundingBox;
+          setTrackedBox(activeBox);
+        }
+
+        // DRAWING
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (activeBox && blurIntensity > 0) {
+          const filter = `blur(${blurIntensity}px) brightness(0.6) ${isColorPop ? 'grayscale(100%)' : ''}`;
+          ctx.filter = filter;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.filter = 'none';
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(activeBox.originX - 10, activeBox.originY - 10, activeBox.width + 20, activeBox.height + 20);
+          ctx.clip();
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.restore();
+        } else {
+          ctx.filter = isColorPop ? 'grayscale(100%)' : 'none';
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.filter = 'none';
+        }
+
+        drawOverlays(ctx, currentDetections, activeBox);
+      }
+      animationId = requestAnimationFrame(runLoop);
+    };
+
+    if (hasStarted) animationId = requestAnimationFrame(runLoop);
     return () => cancelAnimationFrame(animationId);
-  }, [isCameraReady, detector, trackedBox, blurIntensity, isCameraActive]);
+  }, [hasStarted, isCameraReady, detector, trackedBox, blurIntensity, isColorPop, isAutoTrack]);
 
-  const toggleCamera = () => {
-    setIsCameraActive(prev => !prev);
-    if (isCameraActive) {
-      setTrackedBox(null);
-      setDetections([]);
-    }
-  };
+  const drawOverlays = (ctx, dets, tracked) => {
+    dets.forEach(d => {
+      const isMe = tracked && calculateIoU(tracked, d.boundingBox) > 0.8;
+      const { originX, originY, width, height } = d.boundingBox;
 
-  const takeSnapshot = () => {
-    if (!canvasRef.current) return;
-    const link = document.createElement('a');
-    link.download = `SmartFocus_${new Date().getTime()}.png`;
-    link.href = canvasRef.current.toDataURL('image/png');
-    link.click();
-  };
+      ctx.strokeStyle = isMe ? '#facc15' : 'rgba(56, 189, 248, 0.4)';
+      ctx.lineWidth = isMe ? 4 : 2;
+      ctx.strokeRect(originX, originY, width, height);
 
-  const handleCanvasClick = (e) => {
-    if (!videoRef.current || detections.length === 0) return;
-
-    const rect = videoRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const scaleX = videoRef.current.videoWidth / rect.width;
-    const scaleY = videoRef.current.videoHeight / rect.height;
-
-    // Video is mirrored on X axis in CSS
-    const canvasX = videoRef.current.videoWidth - (x * scaleX);
-    const canvasY = y * scaleY;
-
-    let found = null;
-    detections.forEach((det) => {
-      const { originX, originY, width, height } = det.boundingBox;
-      if (
-        canvasX >= originX - 20 &&
-        canvasX <= originX + width + 20 &&
-        canvasY >= originY - 20 &&
-        canvasY <= originY + height + 20
-      ) {
-        found = det.boundingBox;
+      if (isMe) {
+        ctx.fillStyle = '#facc15';
+        ctx.fillRect(originX, originY - 25, 100, 25);
+        ctx.fillStyle = '#0f172a';
+        ctx.font = 'bold 12px Inter';
+        ctx.fillText("TRACKING", originX + 5, originY - 8);
       }
     });
-
-    setTrackedBox(found);
   };
 
-  const drawDetections = (ctx, currentDetections, currentTrackedBox) => {
-    currentDetections.forEach((detection) => {
-      const iou = calculateIoU(currentTrackedBox, detection.boundingBox);
-      const isTracked = currentTrackedBox && iou > 0.8;
+  const handleInteraction = (e) => {
+    if (!videoRef.current || detections.length === 0) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = videoRef.current.videoWidth - ((e.clientX - rect.left) * (videoRef.current.videoWidth / rect.width));
+    const y = (e.clientY - rect.top) * (videoRef.current.videoHeight / rect.height);
 
-      const { originX, originY, width, height } = detection.boundingBox;
-      const label = detection.categories[0].categoryName;
-
-      // Only draw others if they aren't the tracked one
-      if (!isTracked) {
-        ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([5, 5]);
-        ctx.strokeRect(originX, originY, width, height);
-        ctx.setLineDash([]);
-      } else {
-        // Highlighting for tracked object
-        ctx.strokeStyle = '#facc15';
-        ctx.lineWidth = 4;
-
-        // Subject Glow
-        ctx.shadowBlur = 20;
-        ctx.shadowColor = '#facc15';
-        ctx.strokeRect(originX, originY, width, height);
-        ctx.shadowBlur = 0;
-
-        // Label for tracked
-        ctx.fillStyle = '#facc15';
-        const text = `TRACKING: ${label.toUpperCase()}`;
-        const textWidth = ctx.measureText(text).width;
-        ctx.fillRect(originX, originY - 30, textWidth + 12, 30);
-
-        ctx.fillStyle = '#0f172a';
-        ctx.font = 'bold 14px Inter';
-        ctx.fillText(text, originX + 6, originY - 10);
+    detections.forEach(d => {
+      const b = d.boundingBox;
+      if (x >= b.originX && x <= b.originX + b.width && y >= b.originY && y <= b.originY + b.height) {
+        setTrackedBox(b);
       }
     });
   };
@@ -284,15 +201,8 @@ function App() {
       <div className="landing-page">
         <div className="hero-content">
           <h1>Smart Focus <span className="ai-badge">AI</span></h1>
-          <p>Professional Object Tracking & Cinematic Background Blur</p>
-          <div className="feature-dots">
-            <span>• Real-time Detection</span>
-            <span>• IoU Tracking</span>
-            <span>• Visual FX</span>
-          </div>
-          <button className="start-btn" onClick={() => setHasStarted(true)}>
-            LAUNCH SYSTEM
-          </button>
+          <p>Cinematic AI Photography Suite</p>
+          <button className="start-btn" onClick={() => setHasStarted(true)}>LAUNCH ENGINE</button>
         </div>
       </div>
     );
@@ -300,82 +210,43 @@ function App() {
 
   return (
     <div className="app-container">
-      <div className="video-wrapper" onClick={handleCanvasClick}>
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="webcam-video"
-          style={{ visibility: 'hidden', position: 'absolute' }}
-        />
-        <canvas
-          ref={canvasRef}
-          className="overlay-canvas"
-        />
+      <div className="video-wrapper" onClick={handleInteraction}>
+        <video ref={videoRef} autoPlay playsInline muted hidden />
+        <canvas ref={canvasRef} className="overlay-canvas" />
       </div>
 
       {(!isCameraReady || !detector) && (
         <div className="loading-overlay">
           <div className="loader"></div>
-          <p>{!detector ? "Loading AI Models..." : "Waking up Camera..."}</p>
+          <p>{!detector ? "AI Core Warming Up..." : "Initializng Camera..."}</p>
         </div>
       )}
 
       <div className="ui-panel">
         <div className="panel-header">
-          <h1>Smart Focus AI</h1>
-          <div className="fps-badge">{fps} FPS</div>
+          <h3>System Status</h3>
+          <span className="fps-badge">{fps} FPS</span>
         </div>
 
         <div className="panel-body">
-          <p className="status-text">
-            {trackedBox ? "✓ Subject Locked" : "Click an object to focus"}
-          </p>
-
           <div className="control-group">
-            <label>Blur Intensity</label>
-            <input
-              type="range"
-              min="0"
-              max="40"
-              value={blurIntensity}
-              onChange={(e) => setBlurIntensity(parseInt(e.target.value))}
-            />
+            <label>Focus Softness</label>
+            <input type="range" min="0" max="40" value={blurIntensity} onChange={e => setBlurIntensity(Number(e.target.value))} />
           </div>
 
-          <button
-            className={`camera-toggle ${isCameraActive ? 'active' : 'inactive'}`}
-            onClick={toggleCamera}
-          >
-            {isCameraActive ? '📷 Turn Camera OFF' : '📹 Turn Camera ON'}
+          <div className="toggle-group">
+            <input type="checkbox" checked={isColorPop} onChange={e => setIsColorPop(e.target.checked)} id="cp" />
+            <label htmlFor="cp">Color Pop (B&W)</label>
+          </div>
+
+          <div className="toggle-group">
+            <input type="checkbox" checked={isAutoTrack} onChange={e => setIsAutoTrack(e.target.checked)} id="at" />
+            <label htmlFor="at">AI Auto-Focus</label>
+          </div>
+
+          <button className={`camera-toggle ${isCameraActive ? 'active' : ''}`} onClick={() => setIsCameraActive(!isCameraActive)}>
+            {isCameraActive ? "Camera OFF" : "Camera ON"}
           </button>
-
-          <div className="extra-actions">
-            <div className="toggle-group">
-              <label className="switch">
-                <input type="checkbox" checked={isColorPop} onChange={e => setIsColorPop(e.target.checked)} />
-                <span className="slider round"></span>
-              </label>
-              <span>Color Pop (B&W)</span>
-            </div>
-
-            <div className="toggle-group">
-              <label className="switch">
-                <input type="checkbox" checked={isAutoTrack} onChange={e => setIsAutoTrack(e.target.checked)} />
-                <span className="slider round"></span>
-              </label>
-              <span>AI Auto-Focus</span>
-            </div>
-
-            <button className="snapshot-btn" onClick={takeSnapshot} disabled={!isCameraActive}>
-              📸 Capture Masterpiece
-            </button>
-          </div>
-        </div>
-
-        <div className="panel-footer">
-          <p>Hackathon v1.0 • MediaPipe AI</p>
         </div>
       </div>
     </div>
@@ -383,4 +254,3 @@ function App() {
 }
 
 export default App;
-
